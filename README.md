@@ -44,6 +44,53 @@ npm run build
 
 Charger ensuite le dossier généré `dist` comme extension non packée dans Chrome.
 
+## MEP (Mise En Production)
+
+### 1. Préparer l'environnement serveur
+
+Configurer `.env` sur la machine serveur:
+
+- `GEMINI_API_KEY`
+- `GEMINI_MODEL` (optionnel)
+- `PORT` (optionnel)
+
+Lancer ensuite le backend:
+
+```bash
+npm run start:server
+```
+
+### 2. Construire l'extension
+
+```bash
+npm run package:extension
+```
+
+Cette commande produit:
+
+- `dist/` (dossier extension)
+- `pronoteboost-extension.zip` (archive de livraison)
+
+### 3. Déployer côté navigateur (collège/prof)
+
+Option A (test rapide):
+
+- Ouvrir `chrome://extensions`
+- Activer le mode développeur
+- Charger l'extension non empaquetée depuis `dist/`
+
+Option B (distribution ZIP interne):
+
+- Extraire `pronoteboost-extension.zip`
+- Charger le dossier extrait via `chrome://extensions`
+
+### 4. Validation post-MEP
+
+- Le clic sur l'icône ouvre bien le panneau latéral.
+- L'écran d'accueil s'affiche sans erreur 404.
+- L'insertion écrit dans la colonne `App. A : Appréciations`.
+- Le backend répond sur `GET /api/health`.
+
 ## Endpoints backend
 
 - `GET /api/health`

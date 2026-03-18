@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "build": "vite build",
+    "build:extension": "vite build",
+    "package:extension": "npm run build:extension && cd dist && zip -r ../pronoteboost-extension.zip .",
     "dev": "vite",
     "dev:server": "node --watch server/index.js",
     "start:server": "node server/index.js"

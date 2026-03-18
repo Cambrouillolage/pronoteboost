@@ -1,12 +1,18 @@
 (() => {
-  const NAME_COLUMN = 0;
-  const APPRECIATION_COLUMN = 5;
+  const DEFAULT_NAME_COLUMN = 0;
+  const DEFAULT_APPRECIATION_COLUMN = 5;
 
   const normalizeText = (value) =>
     (value || "")
       .replace(/\u00a0/g, " ")
       .replace(/\s+/g, " ")
       .trim();
+
+  const normalizeForCompare = (value) =>
+    normalizeText(value)
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase();
 
   const pause = (duration) => new Promise((resolve) => window.setTimeout(resolve, duration));
 
@@ -40,6 +46,113 @@
 
   const getGridCells = () => {
     return Array.from(document.querySelectorAll(".liste_fixed.liste-focus-grid .liste_celluleGrid[data-colonne]"));
+  };
+
+  const getGridRoot = () => document.querySelector(".liste_fixed.liste-focus-grid");
+
+  const parseColumnFromElement = (element) => {
+    const value = Number(element?.getAttribute?.("data-colonne"));
+    return Number.isNaN(value) ? null : value;
+  };
+
+  const getHeaderByColumn = () => {
+    const root = getGridRoot();
+    if (!root) {
+      return [];
+    }
+
+    const byColumn = new Map();
+    const nodes = Array.from(root.querySelectorAll("[data-colonne]"));
+    for (const node of nodes) {
+      const column = parseColumnFromElement(node);
+      if (column === null) {
+        continue;
+      }
+
+      const rect = node.getBoundingClientRect();
+      if (!rect.width || !rect.height) {
+        continue;
+      }
+
+      const text = normalizeForCompare(node.textContent || "");
+      const previous = byColumn.get(column);
+      if (!previous) {
+        byColumn.set(column, { column, top: rect.top, text });
+        continue;
+      }
+
+      const isHigher = rect.top < previous.top - 1;
+      const isSameBandWithBetterText = Math.abs(rect.top - previous.top) <= 1 && text.length > previous.text.length;
+      if (isHigher || isSameBandWithBetterText) {
+        byColumn.set(column, { column, top: rect.top, text });
+      }
+    }
+
+    return Array.from(byColumn.values());
+  };
+
+  const getPotentialHeaderCells = () => {
+    const root = getGridRoot();
+    if (!root) {
+      return [];
+    }
+
+    const allColumnElements = Array.from(root.querySelectorAll("[data-colonne]"));
+    const headerLike = allColumnElements.filter((element) => {
+      const className = typeof element.className === "string" ? element.className : "";
+      return /entete|header|titre|colonne|caption|label/i.test(className) || element.tagName === "TH";
+    });
+
+    return headerLike.length ? headerLike : allColumnElements;
+  };
+
+  const findAppreciationColumnFromHeaders = () => {
+    const cells = getPotentialHeaderCells();
+    const candidates = cells
+      .map((cell) => {
+        const column = parseColumnFromElement(cell);
+        if (column === null) {
+          return null;
+        }
+
+        const text = normalizeForCompare(cell.textContent || "");
+        if (!text) {
+          return null;
+        }
+
+        return { column, text };
+      })
+      .filter(Boolean);
+
+    const exact = candidates.find((candidate) => /app\.?\s*a\s*:?\s*appreciation/.test(candidate.text));
+    if (exact) {
+      return exact.column;
+    }
+
+    const fallback = candidates.find((candidate) => /appreciation/.test(candidate.text));
+    if (fallback) {
+      return fallback.column;
+    }
+
+    return null;
+  };
+
+  const getColumnConfig = () => {
+    const headers = getHeaderByColumn();
+    const appreciationByHeaderMap = headers.find((item) => /app\.?\s*a\s*:?\s*appreciation/.test(item.text));
+    const appreciationByGenericHeader = headers.find((item) => /appreciation/.test(item.text));
+    const nameByHeaderMap = headers.find((item) => /eleve/.test(item.text));
+
+    const dynamicAppreciationColumn =
+      appreciationByHeaderMap?.column ??
+      appreciationByGenericHeader?.column ??
+      findAppreciationColumnFromHeaders();
+
+    return {
+      nameColumn: nameByHeaderMap?.column ?? DEFAULT_NAME_COLUMN,
+      appreciationColumn:
+        dynamicAppreciationColumn === null ? DEFAULT_APPRECIATION_COLUMN : dynamicAppreciationColumn,
+    };
   };
 
   const getScrollableContainer = () => {
@@ -107,6 +220,7 @@
   };
 
   const getVisibleRowsSnapshot = () => {
+    const { nameColumn, appreciationColumn } = getColumnConfig();
     const rows = new Map();
 
     for (const cell of getGridCells()) {
@@ -130,10 +244,25 @@
 
     const results = [];
     for (const [rowKey, rowCells] of rows.entries()) {
-      const nameCell = rowCells[NAME_COLUMN];
-      const appreciationCell = rowCells[APPRECIATION_COLUMN];
+      let nameCell = rowCells[nameColumn];
+      const appreciationCell = rowCells[appreciationColumn];
       if (!nameCell || !appreciationCell) {
         continue;
+      }
+
+      // Fallback: if the default name column is not stable, pick the first readable cell.
+      if (!normalizeText(readStudentName(nameCell))) {
+        const orderedCells = Object.entries(rowCells)
+          .filter(([key]) => key !== "rowKey")
+          .map(([, cell]) => cell)
+          .filter(Boolean);
+
+        for (const candidateCell of orderedCells) {
+          if (normalizeText(readStudentName(candidateCell))) {
+            nameCell = candidateCell;
+            break;
+          }
+        }
       }
 
       const name = readStudentName(nameCell);
