@@ -340,14 +340,31 @@
   };
 
   const matchesPendingEntry = (row, pendingEntry) => {
-    if (pendingEntry.rowKey && String(pendingEntry.rowKey) === String(row.rowKey)) {
-      return true;
+    // Strict matching: rowKey only (no fallback to normalizedName to prevent inversions)
+    if (!pendingEntry.rowKey || pendingEntry.rowKey === "") {
+      return false;
     }
-
-    return Boolean(pendingEntry.normalizedName && pendingEntry.normalizedName === row.normalizedName);
+    return String(pendingEntry.rowKey) === String(row.rowKey);
   };
 
   const insertAppreciations = async (payload) => {
+    // First, validate all entries have rowKey (anti-inversion check)
+    const entriesWithoutRowKey = payload.filter((entry) => !entry?.rowKey || String(entry.rowKey).trim() === "");
+    
+    if (entriesWithoutRowKey.length > 0) {
+      return {
+        inserted: 0,
+        failed: payload.length,
+        details: [
+          {
+            ok: false,
+            error: `${entriesWithoutRowKey.length} entries rejected: missing or invalid rowKey. This prevents accidental inversions. Reload student list from Pronote.`,
+            failedEntries: entriesWithoutRowKey.map((e) => e?.name || "(no name)"),
+          },
+        ],
+      };
+    }
+
     const pendingEntries = payload.map((entry, index) => ({
       index,
       rowKey: entry?.rowKey ? String(entry.rowKey) : "",

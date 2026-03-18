@@ -1,6 +1,10 @@
 import { createServer } from "node:http";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import {
+  generateAppreciationForStudent,
+  buildPrompt,
+} from "./aiService.js";
 
 const ENV_PATH = resolve(process.cwd(), ".env");
 
@@ -34,6 +38,7 @@ loadEnvFile();
 const PORT = Number(process.env.PORT || 8787);
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.0-flash";
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
+const GEMINI_PROMPT_APPEND = process.env.GEMINI_PROMPT_APPEND || "";
 
 const sendJson = (response, statusCode, payload) => {
   response.writeHead(statusCode, {
@@ -69,78 +74,6 @@ const normalizeList = (value) => {
     .filter(Boolean);
 };
 
-const buildPrompt = ({ studentName, average, tone, principles, freeText }) => {
-  const trimmedName = String(studentName || "").trim();
-  const safeAverage = String(average || "non communiquee").trim() || "non communiquee";
-  const principlesText = principles.length ? principles.join(", ") : "aucun principe specifique";
-  const contextText = freeText ? String(freeText).trim() : "aucune note complementaire";
-
-  return [
-    "Tu rediges une appreciation de bulletin en francais pour un enseignant.",
-    "Rends uniquement le texte final de l'appreciation, sans guillemets, sans liste, sans preambule.",
-    "Le texte doit etre naturel, professionnel, fluide, entre 2 et 3 phrases, et rester compatible avec un bulletin Pronote.",
-    "Evite les formulations trop generiques, les emojis, et toute invention factuelle excessive.",
-    "Adapte le ton demande: bienveillant, neutre, pro ou alarmiste.",
-    `Eleve: ${trimmedName}`,
-    `Moyenne: ${safeAverage}`,
-    `Ton attendu: ${tone}`,
-    `Principes a mentionner si pertinent: ${principlesText}`,
-    `Notes complementaires: ${contextText}`,
-  ].join("\n");
-};
-
-const extractGeminiText = (payload) => {
-  const text = payload?.candidates?.[0]?.content?.parts
-    ?.map((part) => (typeof part?.text === "string" ? part.text : ""))
-    .join(" ")
-    .trim();
-
-  return text ? text.replace(/^['\"]|['\"]$/g, "").trim() : "";
-};
-
-const generateAppreciation = async (input) => {
-  if (!GEMINI_API_KEY) {
-    throw new Error("GEMINI_API_KEY manquante");
-  }
-
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        contents: [
-          {
-            parts: [
-              {
-                text: buildPrompt(input),
-              },
-            ],
-          },
-        ],
-        generationConfig: {
-          temperature: 0.7,
-          topP: 0.9,
-          maxOutputTokens: 180,
-        },
-      }),
-    },
-  );
-
-  const payload = await response.json();
-  if (!response.ok) {
-    throw new Error(payload?.error?.message || `Erreur Gemini ${response.status}`);
-  }
-
-  const appreciation = extractGeminiText(payload);
-  if (!appreciation) {
-    throw new Error("Reponse Gemini vide ou invalide");
-  }
-
-  return appreciation;
-};
 
 const server = createServer(async (request, response) => {
   if (!request.url) {
@@ -160,6 +93,8 @@ const server = createServer(async (request, response) => {
       ok: true,
       model: GEMINI_MODEL,
       hasGeminiKey: Boolean(GEMINI_API_KEY),
+      acceptsClientGeminiKey: false,
+      message: "Clé API serveur uniquement (pas de clé côté client)",
     });
     return;
   }
@@ -174,17 +109,32 @@ const server = createServer(async (request, response) => {
         return;
       }
 
-      const appreciation = await generateAppreciation({
-        studentName,
-        average: typeof body.average === "string" ? body.average : "",
-        tone: typeof body.tone === "string" ? body.tone : "neutre",
-        principles: normalizeList(body.principles),
-        freeText: typeof body.freeText === "string" ? body.freeText : "",
-      });
+      if (!GEMINI_API_KEY) {
+        sendJson(response, 500, {
+          ok: false,
+          error: "GEMINI_API_KEY is not configured on the server. Please set it in .env",
+        });
+        return;
+      }
+
+      const result = await generateAppreciationForStudent(
+        {
+          studentName,
+          average: typeof body.average === "string" ? body.average : "",
+          tone: typeof body.tone === "string" ? body.tone : "neutre",
+          principles: normalizeList(body.principles),
+          freeText: typeof body.freeText === "string" ? body.freeText : "",
+          subject: typeof body.subject === "string" ? body.subject : "",
+          teacherPreferences: normalizeList(body.teacherPreferences),
+          additionalPromptInstructions: GEMINI_PROMPT_APPEND,
+        },
+        GEMINI_API_KEY,
+        GEMINI_MODEL,
+      );
 
       sendJson(response, 200, {
         ok: true,
-        appreciation,
+        ...result,
       });
       return;
     } catch (error) {

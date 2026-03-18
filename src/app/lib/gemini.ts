@@ -6,6 +6,8 @@ export interface GeminiGenerateInput {
   tone: Tone;
   principles: string[];
   freeText: string;
+  subject?: string;
+  teacherPreferences?: string[];
 }
 
 export interface GeminiGenerateResponse {

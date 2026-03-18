@@ -59,6 +59,12 @@ export function Generate() {
   const [isInserting, setIsInserting] = useState(false);
   const [studentsSource, setStudentsSource] = useState<"pronote" | "mock">("mock");
   const [infoMessage, setInfoMessage] = useState("");
+  const [subject, setSubject] = useState(() => localStorage.getItem("pronoteBoost_subject") || "");
+  const [teacherPreferences, setTeacherPreferences] = useState<string[]>(() => {
+    const saved = localStorage.getItem("pronoteBoost_teacherPreferences");
+    return saved ? JSON.parse(saved) : [];
+  });
+  const [newPreference, setNewPreference] = useState("");
 
   useEffect(() => {
     // Load credits
@@ -151,21 +157,56 @@ export function Generate() {
     return sampleAppreciations[student.tone].replace("Maxime", student.name.split(" ")[0]);
   };
 
+  const saveGeminiApiKey = () => {
+    const sanitized = subject.trim();
+    localStorage.setItem("pronoteBoost_subject", sanitized);
+    setInfoMessage("Matière enregistrée.");
+  };
+
+  const addTeacherPreference = () => {
+    const trimmed = newPreference.trim();
+    if (!trimmed) return;
+    
+    const updated = [...teacherPreferences, trimmed];
+    setTeacherPreferences(updated);
+    localStorage.setItem("pronoteBoost_teacherPreferences", JSON.stringify(updated));
+    setNewPreference("");
+    setInfoMessage("Phrase ajoutée aux préférences.");
+  };
+
+  const removeTeacherPreference = (index: number) => {
+    const updated = teacherPreferences.filter((_, i) => i !== index);
+    setTeacherPreferences(updated);
+    localStorage.setItem("pronoteBoost_teacherPreferences", JSON.stringify(updated));
+    setInfoMessage("Phrase supprimée.");
+  };
+
   const generateForOneStudent = async (student: Student) => {
     try {
       if (!canUseGeminiApi()) {
         throw new Error("API Gemini non configuree");
       }
 
-      return await generateAppreciationWithGemini({
+      const appreciation = await generateAppreciationWithGemini({
         studentName: student.name,
         average: student.average,
         tone: student.tone,
         principles: student.selectedPrinciples,
         freeText: student.freeText,
+        subject,
+        teacherPreferences,
       });
-    } catch {
-      return buildFallbackAppreciation(student);
+
+      return {
+        appreciation,
+        usedFallback: false,
+      };
+    } catch (error) {
+      return {
+        appreciation: buildFallbackAppreciation(student),
+        usedFallback: true,
+        reason: error instanceof Error ? error.message : "Erreur de generation",
+      };
     }
   };
 
@@ -206,17 +247,17 @@ export function Generate() {
     }
 
     setIsGenerating(true);
-    const appreciation = await generateForOneStudent(student);
+    const result = await generateForOneStudent(student);
 
     setStudents(prevStudents => prevStudents.map(s => {
       if (s.id === studentId) {
-        return { ...s, appreciation };
+        return { ...s, appreciation: result.appreciation };
       }
       return s;
     }));
 
-    if (!canUseGeminiApi()) {
-      setInfoMessage("Generation locale utilisee (Gemini non configure). Configure VITE_PRONOTEBOOST_API_URL pour activer Gemini.");
+    if (result.usedFallback) {
+      setInfoMessage(`Generation locale utilisee (${result.reason || "Gemini indisponible"}).`);
     }
 
     setIsGenerating(false);
@@ -232,7 +273,7 @@ export function Generate() {
     const generatedRows = await Promise.all(
       studentsToGenerate.map(async student => ({
         id: student.id,
-        appreciation: await generateForOneStudent(student),
+        result: await generateForOneStudent(student),
       })),
     );
 
@@ -242,11 +283,14 @@ export function Generate() {
         return s;
       }
 
-      return { ...s, appreciation: generated.appreciation };
+      return { ...s, appreciation: generated.result.appreciation };
     }));
 
-    if (!canUseGeminiApi()) {
-      setInfoMessage("Generation locale utilisee (Gemini non configure). Configure VITE_PRONOTEBOOST_API_URL pour activer Gemini.");
+    const fallbackCount = generatedRows.filter((row) => row.result.usedFallback).length;
+    if (fallbackCount > 0) {
+      setInfoMessage(
+        `${fallbackCount} appreciation(s) generee(s) en local (Gemini indisponible ou mal configure).`,
+      );
     }
 
     setIsGenerating(false);
@@ -376,6 +420,68 @@ export function Generate() {
               {isLoadingStudents ? "Chargement des eleves Pronote..." : infoMessage}
             </div>
           )}
+
+          <div className="mb-3 rounded-lg border border-gray-200 bg-white px-3 py-3">
+            <div className="mb-2 text-xs text-gray-700">Configuration Professeur</div>
+            
+            {/* Subject field */}
+            <label className="mb-1 block text-[11px] text-gray-600">Matière</label>
+            <input
+              type="text"
+              value={subject}
+              onChange={(e) => setSubject(e.target.value)}
+              placeholder="Ex: Anglais, Mathématiques..."
+              className="w-full p-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#396155] text-xs mb-2"
+            />
+            <button
+              onClick={saveGeminiApiKey}
+              className="text-xs text-[#396155] hover:text-[#2a4a40] underline mb-3"
+            >
+              Enregistrer matière
+            </button>
+
+            {/* Teacher preferences */}
+            <label className="mb-1 block text-[11px] text-gray-600">Phrases d'appréciation préférées</label>
+            <p className="text-[10px] text-gray-500 mb-2">Ajoutez vos phrases préférées pour guider l'IA sur votre style.</p>
+            
+            <div className="mb-2 flex gap-2">
+              <input
+                type="text"
+                value={newPreference}
+                onChange={(e) => setNewPreference(e.target.value)}
+                placeholder="Ex: Élève engagé et régulier..."
+                className="flex-1 p-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#396155] text-xs"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    addTeacherPreference();
+                  }
+                }}
+              />
+              <button
+                onClick={addTeacherPreference}
+                className="px-2 py-2 bg-[#396155] text-white rounded-lg text-xs hover:bg-[#2a4a40] transition-colors"
+              >
+                Ajouter
+              </button>
+            </div>
+
+            {teacherPreferences.length > 0 && (
+              <div className="mb-2 space-y-1">
+                {teacherPreferences.map((pref, index) => (
+                  <div key={index} className="flex items-center justify-between bg-gray-50 p-2 rounded text-xs">
+                    <span className="text-gray-700 flex-1 truncate">{pref}</span>
+                    <button
+                      onClick={() => removeTeacherPreference(index)}
+                      className="text-red-500 hover:text-red-700 ml-2"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
           <div className="flex items-center justify-between mb-2">
             <label className="text-xs text-gray-700">Ton Général</label>
             <div className="flex items-center gap-3">
