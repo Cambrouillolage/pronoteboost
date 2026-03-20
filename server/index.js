@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   generateAppreciationForStudent,
+  generateAppreciationsForBatch,
   buildPrompt,
 } from "./aiService.js";
 
@@ -136,6 +137,82 @@ const server = createServer(async (request, response) => {
         ok: true,
         ...result,
       });
+      return;
+    } catch (error) {
+      sendJson(response, 500, {
+        ok: false,
+        error: error instanceof Error ? error.message : "Erreur serveur",
+      });
+      return;
+    }
+  }
+
+  // ── Endpoint batch ─────────────────────────────────────────────────────────
+  // POST /api/generate-appreciations
+  //
+  // Reçoit tous les élèves d'une classe et retourne toutes les appréciations
+  // en UN SEUL appel Gemini (voir aiService.js pour le détail de la logique).
+  //
+  // Corps de la requête:
+  //   {
+  //     students: [
+  //       { line: 1, firstName: "Maxime", average?: "14.5", tone: "neutre",
+  //         principles?: [...], freeText?: "..." }
+  //     ],
+  //     subject: "Mathématiques",
+  //     schoolLevel: "Collège",          // Maternelle | Élémentaire | Collège | Lycée
+  //     teacherPreferences?: ["..."]    // optionnel
+  //   }
+  //
+  // Réponse:
+  //   { ok: true, appreciations: [{ line: 1, firstName: "Maxime", appreciation: "..." }] }
+  //
+  if (request.method === "POST" && url.pathname === "/api/generate-appreciations") {
+    try {
+      const body = await readJsonBody(request);
+
+      if (!Array.isArray(body.students) || body.students.length === 0) {
+        sendJson(response, 400, { ok: false, error: "Le champ 'students' doit etre un tableau non vide" });
+        return;
+      }
+
+      if (body.students.length > 30) {
+        sendJson(response, 400, { ok: false, error: "Maximum 30 eleves par requete batch" });
+        return;
+      }
+
+      if (!GEMINI_API_KEY) {
+        sendJson(response, 500, {
+          ok: false,
+          error: "GEMINI_API_KEY is not configured on the server. Please set it in .env",
+        });
+        return;
+      }
+
+      const students = body.students.map((s) => ({
+        line: s.line ?? s.id,
+        firstName: typeof s.firstName === "string" ? s.firstName.trim() : "",
+        average: typeof s.average === "string" ? s.average.trim() : "",
+        tone: typeof s.tone === "string" ? s.tone : "neutre",
+        principles: normalizeList(s.principles),
+        freeText: typeof s.freeText === "string" ? s.freeText : "",
+      }));
+
+      const sharedContext = {
+        subject: typeof body.subject === "string" ? body.subject : "",
+        schoolLevel: typeof body.schoolLevel === "string" ? body.schoolLevel : "Collège",
+        teacherPreferences: normalizeList(body.teacherPreferences),
+        additionalPromptInstructions: GEMINI_PROMPT_APPEND,
+      };
+
+      const appreciations = await generateAppreciationsForBatch(
+        students,
+        sharedContext,
+        GEMINI_API_KEY,
+        GEMINI_MODEL,
+      );
+
+      sendJson(response, 200, { ok: true, appreciations });
       return;
     } catch (error) {
       sendJson(response, 500, {
