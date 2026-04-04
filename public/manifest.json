@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "PronoteBoost",
+  "version": "0.1.0",
+  "description": "Genere et injecte des appreciations dans Pronote.",
+  "permissions": ["storage", "activeTab", "tabs", "sidePanel"],
+  "host_permissions": ["*://*.index-education.net/pronote/*"],
+  "action": {
+    "default_title": "PronoteBoost"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "side_panel": {
+    "default_path": "index.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://*.index-education.net/pronote/*"],
+      "js": ["content-script.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
