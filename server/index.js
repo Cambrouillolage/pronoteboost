@@ -4,10 +4,16 @@ import { resolve } from "node:path";
 import {
   generateAppreciationForStudent,
   generateAppreciationsForBatch,
-  buildPrompt,
 } from "./aiService.js";
 
 const ENV_PATH = resolve(process.cwd(), ".env");
+const DOTENV_PRIORITY_KEYS = new Set([
+  "OPENAI_API_KEY",
+  "OPENAI_MODEL",
+  "OPENAI_FALLBACK_MODEL",
+  "OPENAI_PROMPT_APPEND",
+  "PORT",
+]);
 
 const loadEnvFile = () => {
   if (!existsSync(ENV_PATH)) {
@@ -28,8 +34,20 @@ const loadEnvFile = () => {
 
     const key = line.slice(0, separatorIndex).trim();
     const value = line.slice(separatorIndex + 1).trim().replace(/^['\"]|['\"]$/g, "");
-    if (key && process.env[key] === undefined) {
+    if (!key) {
+      continue;
+    }
+
+    const hasExistingValue = process.env[key] !== undefined;
+    const shouldOverrideFromDotEnv = DOTENV_PRIORITY_KEYS.has(key);
+
+    if (!hasExistingValue || shouldOverrideFromDotEnv) {
+      if (hasExistingValue && process.env[key] !== value && shouldOverrideFromDotEnv) {
+        console.warn(`[PronoteBoost API] .env overrides inherited env for '${key}' (local precedence)`);
+      }
       process.env[key] = value;
+    } else {
+      console.warn(`[PronoteBoost API] .env: '${key}' already set via shell/system env — .env value ignored (precedence rule)`);
     }
   }
 };
@@ -37,9 +55,22 @@ const loadEnvFile = () => {
 loadEnvFile();
 
 const PORT = Number(process.env.PORT || 8787);
-const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.0-flash";
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
-const GEMINI_PROMPT_APPEND = process.env.GEMINI_PROMPT_APPEND || "";
+const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4.1-mini";
+const OPENAI_FALLBACK_MODEL = process.env.OPENAI_FALLBACK_MODEL || "gpt-4o-mini";
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
+const OPENAI_PROMPT_APPEND = process.env.OPENAI_PROMPT_APPEND || "";
+
+// Safe runtime diagnostics — never expose the full key
+const getVarSource = (envKey) => (process.env[envKey] !== undefined ? "env" : "default");
+const computeKeyFingerprint = (key) => {
+  if (!key || key.length < 10) return null;
+  return `${key.slice(0, 4)}...${key.slice(-4)}`;
+};
+const OPENAI_MODEL_SOURCE = getVarSource("OPENAI_MODEL");
+const OPENAI_KEY_FINGERPRINT = computeKeyFingerprint(OPENAI_API_KEY);
+
+console.info(`[PronoteBoost API] provider=openai model=${OPENAI_MODEL} (source: ${OPENAI_MODEL_SOURCE})`);
+console.info(`[PronoteBoost API] openaiKey=${OPENAI_KEY_FINGERPRINT ?? "NOT SET"} (hasKey: ${Boolean(OPENAI_API_KEY)})`);
 
 const sendJson = (response, statusCode, payload) => {
   response.writeHead(statusCode, {
@@ -75,6 +106,58 @@ const normalizeList = (value) => {
     .filter(Boolean);
 };
 
+const isQuotaOrRateLimitError = (message) => {
+  const normalized = String(message || "").toLowerCase();
+  return (
+    normalized.includes("rate limit")
+    || normalized.includes("quota")
+    || normalized.includes("quota exceeded")
+    || normalized.includes("resource_exhausted")
+    || normalized.includes("too many requests")
+    || normalized.includes("insufficient_quota")
+  );
+};
+
+const isAuthKeyError = (message) => {
+  const normalized = String(message || "").toLowerCase();
+  return (
+    normalized.includes("api key was reported as leaked")
+    || normalized.includes("incorrect api key")
+    || normalized.includes("api key not valid")
+    || normalized.includes("invalid api key")
+    || normalized.includes("permission denied")
+    || normalized.includes("unauthenticated")
+    || normalized.includes("invalid_api_key")
+  );
+};
+
+const isHighDemandError = (message) => {
+  const normalized = String(message || "").toLowerCase();
+  return (
+    normalized.includes("high demand")
+    || normalized.includes("overloaded")
+    || normalized.includes("try again later")
+    || normalized.includes("temporarily")
+  );
+};
+
+const getErrorStatusCode = (error) => {
+  const message = error instanceof Error ? error.message : "";
+  if (isAuthKeyError(message)) {
+    return 401;
+  }
+
+  if (isQuotaOrRateLimitError(message)) {
+    return 429;
+  }
+
+  if (isHighDemandError(message)) {
+    return 503;
+  }
+
+  return 500;
+};
+
 
 const server = createServer(async (request, response) => {
   if (!request.url) {
@@ -84,6 +167,10 @@ const server = createServer(async (request, response) => {
 
   const url = new URL(request.url, `http://${request.headers.host || `localhost:${PORT}`}`);
 
+  if (request.method && request.method !== "OPTIONS") {
+    console.info(`[PronoteBoost API] ${request.method} ${url.pathname}`);
+  }
+
   if (request.method === "OPTIONS") {
     sendJson(response, 204, { ok: true });
     return;
@@ -92,10 +179,14 @@ const server = createServer(async (request, response) => {
   if (request.method === "GET" && url.pathname === "/api/health") {
     sendJson(response, 200, {
       ok: true,
-      model: GEMINI_MODEL,
-      hasGeminiKey: Boolean(GEMINI_API_KEY),
-      acceptsClientGeminiKey: false,
-      message: "Clé API serveur uniquement (pas de clé côté client)",
+      provider: "openai",
+      model: OPENAI_MODEL,
+      fallbackModel: OPENAI_FALLBACK_MODEL,
+      modelSource: OPENAI_MODEL_SOURCE,
+      hasOpenAiKey: Boolean(OPENAI_API_KEY),
+      keyFingerprint: OPENAI_KEY_FINGERPRINT,
+      acceptsClientOpenAiKey: false,
+      message: "Cle API serveur uniquement (pas de cle cote client)",
     });
     return;
   }
@@ -110,10 +201,12 @@ const server = createServer(async (request, response) => {
         return;
       }
 
-      if (!GEMINI_API_KEY) {
+      if (!OPENAI_API_KEY) {
+        console.error("[PronoteBoost API] OPENAI_API_KEY missing for /api/generate-appreciation");
         sendJson(response, 500, {
           ok: false,
-          error: "GEMINI_API_KEY is not configured on the server. Please set it in .env",
+          error: "OPENAI_API_KEY is not configured on the server. Please set it in .env",
+          code: "OPENAI_KEY_MISSING",
         });
         return;
       }
@@ -127,19 +220,22 @@ const server = createServer(async (request, response) => {
           freeText: typeof body.freeText === "string" ? body.freeText : "",
           subject: typeof body.subject === "string" ? body.subject : "",
           teacherPreferences: normalizeList(body.teacherPreferences),
-          additionalPromptInstructions: GEMINI_PROMPT_APPEND,
+          additionalPromptInstructions: OPENAI_PROMPT_APPEND,
         },
-        GEMINI_API_KEY,
-        GEMINI_MODEL,
+        OPENAI_API_KEY,
+        OPENAI_MODEL,
+        OPENAI_FALLBACK_MODEL,
       );
 
       sendJson(response, 200, {
         ok: true,
         ...result,
       });
+      console.info(`[PronoteBoost API] /api/generate-appreciation ok for ${studentName}`);
       return;
     } catch (error) {
-      sendJson(response, 500, {
+      console.error("[PronoteBoost API] /api/generate-appreciation failed:", error);
+      sendJson(response, getErrorStatusCode(error), {
         ok: false,
         error: error instanceof Error ? error.message : "Erreur serveur",
       });
@@ -150,8 +246,8 @@ const server = createServer(async (request, response) => {
   // ── Endpoint batch ─────────────────────────────────────────────────────────
   // POST /api/generate-appreciations
   //
-  // Reçoit tous les élèves d'une classe et retourne toutes les appréciations
-  // en UN SEUL appel Gemini (voir aiService.js pour le détail de la logique).
+  // Reçoit tous les eleves d'une classe et retourne toutes les appreciations
+  // en UN SEUL appel OpenAI (voir aiService.js pour le detail de la logique).
   //
   // Corps de la requête:
   //   {
@@ -181,10 +277,12 @@ const server = createServer(async (request, response) => {
         return;
       }
 
-      if (!GEMINI_API_KEY) {
+      if (!OPENAI_API_KEY) {
+        console.error("[PronoteBoost API] OPENAI_API_KEY missing for /api/generate-appreciations");
         sendJson(response, 500, {
           ok: false,
-          error: "GEMINI_API_KEY is not configured on the server. Please set it in .env",
+          error: "OPENAI_API_KEY is not configured on the server. Please set it in .env",
+          code: "OPENAI_KEY_MISSING",
         });
         return;
       }
@@ -202,20 +300,23 @@ const server = createServer(async (request, response) => {
         subject: typeof body.subject === "string" ? body.subject : "",
         schoolLevel: typeof body.schoolLevel === "string" ? body.schoolLevel : "Collège",
         teacherPreferences: normalizeList(body.teacherPreferences),
-        additionalPromptInstructions: GEMINI_PROMPT_APPEND,
+        additionalPromptInstructions: OPENAI_PROMPT_APPEND,
       };
 
       const appreciations = await generateAppreciationsForBatch(
         students,
         sharedContext,
-        GEMINI_API_KEY,
-        GEMINI_MODEL,
+        OPENAI_API_KEY,
+        OPENAI_MODEL,
+        OPENAI_FALLBACK_MODEL,
       );
 
       sendJson(response, 200, { ok: true, appreciations });
+      console.info(`[PronoteBoost API] /api/generate-appreciations ok (${students.length} students)`);
       return;
     } catch (error) {
-      sendJson(response, 500, {
+      console.error("[PronoteBoost API] /api/generate-appreciations failed:", error);
+      sendJson(response, getErrorStatusCode(error), {
         ok: false,
         error: error instanceof Error ? error.message : "Erreur serveur",
       });
@@ -227,5 +328,5 @@ const server = createServer(async (request, response) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`PronoteBoost Gemini backend listening on http://localhost:${PORT}`);
+  console.log(`PronoteBoost OpenAI backend listening on http://localhost:${PORT}`);
 });

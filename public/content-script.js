@@ -1,6 +1,10 @@
 (() => {
   const DEFAULT_NAME_COLUMN = 0;
   const DEFAULT_APPRECIATION_COLUMN = 5;
+  const APPRECIATION_EXACT_REGEX = /\bapp\.?\s*a\s*:?\s*appreciation\b/;
+  const APPRECIATION_FALLBACK_REGEX = /\bappreciation\b|\bapp\.?\b/;
+  const NAME_HEADER_REGEX = /\beleve\b|\bnom\b|\bprenom\b/;
+  const BLOCKED_COLUMN_REGEX = /\bn\.?\s*note\b|\bnote\s*n\.?\b|\bnote\b/;
 
   const normalizeText = (value) =>
     (value || "")
@@ -44,27 +48,239 @@
     };
   };
 
+  const getGridIdPrefix = (id) => {
+    if (!id) {
+      return null;
+    }
+
+    const match = id.match(/^(.*)_(\d+)_(\d+)(?:_div)?$/);
+    if (!match) {
+      return null;
+    }
+
+    return match[1];
+  };
+
   const getGridCells = () => {
     return Array.from(document.querySelectorAll(".liste_fixed.liste-focus-grid .liste_celluleGrid[data-colonne]"));
   };
 
   const getGridRoot = () => document.querySelector(".liste_fixed.liste-focus-grid");
 
+  const DEBUG_FLAG_KEY = "pronoteboost_debug";
+
+  const isDebugEnabled = () => {
+    try {
+      return window.localStorage.getItem(DEBUG_FLAG_KEY) === "1";
+    } catch {
+      return false;
+    }
+  };
+
+  const debugLog = (...args) => {
+    if (isDebugEnabled()) {
+      console.log("[PronoteBoost]", ...args);
+    }
+  };
+
+  const getGridPrefixes = () => {
+    const prefixes = new Set();
+    for (const cell of getGridCells()) {
+      const prefix = getGridIdPrefix(cell?.id || "");
+      if (prefix) {
+        prefixes.add(prefix);
+      }
+    }
+
+    return prefixes;
+  };
+
+  const getActiveGridPrefix = () => {
+    const firstCell = getGridCells()[0];
+    return getGridIdPrefix(firstCell?.id || "");
+  };
+
   const parseColumnFromElement = (element) => {
     const value = Number(element?.getAttribute?.("data-colonne"));
     return Number.isNaN(value) ? null : value;
   };
 
-  const getHeaderByColumn = () => {
+  const parseGridColumnStart = (element) => {
+    if (!element) {
+      return null;
+    }
+
+    const inlineGridColumn = (element.style?.gridColumn || "").trim();
+    if (inlineGridColumn) {
+      const firstToken = inlineGridColumn.split("/")[0].trim();
+      const numeric = Number(firstToken);
+      if (!Number.isNaN(numeric)) {
+        return numeric;
+      }
+    }
+
+    const computedGridColumnStart = window.getComputedStyle(element).gridColumnStart;
+    const computedNumeric = Number(computedGridColumnStart);
+    return Number.isNaN(computedNumeric) ? null : computedNumeric;
+  };
+
+  const getVisibleColumnGeometry = () => {
+    const byColumn = new Map();
+    const cells = getGridCells().slice(0, 180);
+
+    for (const cell of cells) {
+      const column = parseColumnFromElement(cell);
+      if (column === null) {
+        continue;
+      }
+
+      const rect = cell.getBoundingClientRect();
+      if (!rect.width || !rect.height) {
+        continue;
+      }
+
+      const previous = byColumn.get(column);
+      if (!previous || rect.width > previous.width) {
+        byColumn.set(column, {
+          column,
+          left: rect.left,
+          right: rect.right,
+          center: rect.left + rect.width / 2,
+          width: rect.width,
+        });
+      }
+    }
+
+    return Array.from(byColumn.values()).sort((a, b) => a.left - b.left);
+  };
+
+  const parseColumnFromHeaderId = (element) => {
+    const id = element?.id || "";
+    const match = id.match(/_titrecell_\d+_(\d+)$/);
+    if (!match) {
+      return null;
+    }
+
+    const value = Number(match[1]);
+    return Number.isNaN(value) ? null : value;
+  };
+
+  const resolveColumnFromGeometry = (element) => {
+    if (!element) {
+      return null;
+    }
+
+    const geometry = getVisibleColumnGeometry();
+    if (!geometry.length) {
+      return null;
+    }
+
+    const rect = element.getBoundingClientRect();
+    if (!rect.width || !rect.height) {
+      return null;
+    }
+
+    const center = rect.left + rect.width / 2;
+    const overlap = geometry.find((item) => center >= item.left - 2 && center <= item.right + 2);
+    if (overlap) {
+      return overlap.column;
+    }
+
+    let best = null;
+    let bestDistance = Number.POSITIVE_INFINITY;
+    for (const item of geometry) {
+      const distance = Math.abs(item.center - center);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        best = item;
+      }
+    }
+
+    return best?.column ?? null;
+  };
+
+  const parseColumnFromHeaderElement = (element) => {
+    const fromHeaderId = parseColumnFromHeaderId(element);
+    if (fromHeaderId !== null) {
+      return fromHeaderId;
+    }
+
+    const fromDataAttribute = parseColumnFromElement(element);
+    if (fromDataAttribute !== null) {
+      return fromDataAttribute;
+    }
+
+    return resolveColumnFromGeometry(element);
+  };
+
+  const isBlockedHeaderText = (text) => BLOCKED_COLUMN_REGEX.test(text);
+
+  const isAppreciationHeaderText = (text) => {
+    if (!text || isBlockedHeaderText(text)) {
+      return false;
+    }
+
+    return APPRECIATION_EXACT_REGEX.test(text) || APPRECIATION_FALLBACK_REGEX.test(text);
+  };
+
+  const getColumnHeaderNodes = () => {
     const root = getGridRoot();
-    if (!root) {
+    const gridPrefix = getActiveGridPrefix();
+    const knownPrefixes = getGridPrefixes();
+
+    const titleHeaders = Array.from(document.querySelectorAll('[role="columnheader"][id*="_titrecell_"]'));
+
+    const samePrefixHeaders = titleHeaders.filter((node) => {
+      if (!gridPrefix) {
+        return false;
+      }
+
+      const id = node.getAttribute("id") || "";
+      return id.startsWith(`${gridPrefix}_titrecell_`);
+    });
+    if (samePrefixHeaders.length) {
+      return samePrefixHeaders;
+    }
+
+    // Split Pronote grids can expose multiple prefixes (frozen + scrolling panes).
+    const multiPrefixHeaders = titleHeaders.filter((node) => {
+      const id = node.getAttribute("id") || "";
+      for (const prefix of knownPrefixes) {
+        if (id.startsWith(`${prefix}_titrecell_`)) {
+          return true;
+        }
+      }
+      return false;
+    });
+    if (multiPrefixHeaders.length) {
+      return multiPrefixHeaders;
+    }
+
+    // Preferred path: Pronote title headers bound to the same grid prefix as data cells.
+    const scopedRoleHeaders = root
+      ? Array.from(root.querySelectorAll('[role="columnheader"]'))
+      : [];
+    if (scopedRoleHeaders.length) {
+      return scopedRoleHeaders;
+    }
+
+    const documentRoleHeaders = Array.from(document.querySelectorAll('[role="columnheader"]'));
+    if (documentRoleHeaders.length) {
+      return documentRoleHeaders;
+    }
+
+    return root ? Array.from(root.querySelectorAll("[data-colonne]")) : [];
+  };
+
+  const getHeaderByColumn = () => {
+    const nodes = getColumnHeaderNodes();
+    if (!nodes.length) {
       return [];
     }
 
     const byColumn = new Map();
-    const nodes = Array.from(root.querySelectorAll("[data-colonne]"));
     for (const node of nodes) {
-      const column = parseColumnFromElement(node);
+      const column = parseColumnFromHeaderElement(node);
       if (column === null) {
         continue;
       }
@@ -74,17 +290,18 @@
         continue;
       }
 
-      const text = normalizeForCompare(node.textContent || "");
+      const rawText = normalizeText(node.textContent || "");
+      const text = normalizeForCompare(rawText);
       const previous = byColumn.get(column);
       if (!previous) {
-        byColumn.set(column, { column, top: rect.top, text });
+        byColumn.set(column, { column, top: rect.top, text, rawText });
         continue;
       }
 
       const isHigher = rect.top < previous.top - 1;
       const isSameBandWithBetterText = Math.abs(rect.top - previous.top) <= 1 && text.length > previous.text.length;
       if (isHigher || isSameBandWithBetterText) {
-        byColumn.set(column, { column, top: rect.top, text });
+        byColumn.set(column, { column, top: rect.top, text, rawText });
       }
     }
 
@@ -92,15 +309,18 @@
   };
 
   const getPotentialHeaderCells = () => {
-    const root = getGridRoot();
-    if (!root) {
+    const allColumnElements = getColumnHeaderNodes();
+    if (!allColumnElements.length) {
       return [];
     }
 
-    const allColumnElements = Array.from(root.querySelectorAll("[data-colonne]"));
     const headerLike = allColumnElements.filter((element) => {
       const className = typeof element.className === "string" ? element.className : "";
-      return /entete|header|titre|colonne|caption|label/i.test(className) || element.tagName === "TH";
+      return (
+        /entete|header|titre|colonne|caption|label/i.test(className) ||
+        element.tagName === "TH" ||
+        element.getAttribute("role") === "columnheader"
+      );
     });
 
     return headerLike.length ? headerLike : allColumnElements;
@@ -110,7 +330,7 @@
     const cells = getPotentialHeaderCells();
     const candidates = cells
       .map((cell) => {
-        const column = parseColumnFromElement(cell);
+        const column = parseColumnFromHeaderElement(cell);
         if (column === null) {
           return null;
         }
@@ -124,12 +344,12 @@
       })
       .filter(Boolean);
 
-    const exact = candidates.find((candidate) => /app\.?\s*a\s*:?\s*appreciation/.test(candidate.text));
+    const exact = candidates.find((candidate) => APPRECIATION_EXACT_REGEX.test(candidate.text));
     if (exact) {
       return exact.column;
     }
 
-    const fallback = candidates.find((candidate) => /appreciation/.test(candidate.text));
+    const fallback = candidates.find((candidate) => isAppreciationHeaderText(candidate.text));
     if (fallback) {
       return fallback.column;
     }
@@ -139,20 +359,74 @@
 
   const getColumnConfig = () => {
     const headers = getHeaderByColumn();
-    const appreciationByHeaderMap = headers.find((item) => /app\.?\s*a\s*:?\s*appreciation/.test(item.text));
-    const appreciationByGenericHeader = headers.find((item) => /appreciation/.test(item.text));
-    const nameByHeaderMap = headers.find((item) => /eleve/.test(item.text));
+    const appreciationByHeaderMap = headers.find((item) => APPRECIATION_EXACT_REGEX.test(item.text));
+    const appreciationByGenericHeader = headers.find((item) => isAppreciationHeaderText(item.text));
+    const nameByHeaderMap = headers.find((item) => NAME_HEADER_REGEX.test(item.text));
 
     const dynamicAppreciationColumn =
       appreciationByHeaderMap?.column ??
       appreciationByGenericHeader?.column ??
       findAppreciationColumnFromHeaders();
 
+    const appreciationColumn =
+      dynamicAppreciationColumn === null ? DEFAULT_APPRECIATION_COLUMN : dynamicAppreciationColumn;
+
+    const appreciationHeaderText =
+      headers.find((item) => item.column === appreciationColumn)?.text || "";
+
+    debugLog("column_config", {
+      availableHeaders: headers.map((item) => ({ column: item.column, text: item.text })),
+      selected: {
+        nameColumn: nameByHeaderMap?.column ?? DEFAULT_NAME_COLUMN,
+        appreciationColumn,
+        appreciationHeaderText,
+      },
+      prefixes: Array.from(getGridPrefixes()),
+    });
+
     return {
       nameColumn: nameByHeaderMap?.column ?? DEFAULT_NAME_COLUMN,
-      appreciationColumn:
-        dynamicAppreciationColumn === null ? DEFAULT_APPRECIATION_COLUMN : dynamicAppreciationColumn,
+      appreciationColumn,
+      appreciationHeaderText,
     };
+  };
+
+  const getCellsForColumn = (rowCells, column) => {
+    const value = rowCells[column];
+    if (!value) {
+      return [];
+    }
+
+    return Array.isArray(value) ? value : [value];
+  };
+
+  const hasLineContainer = (cell) => Boolean(cell?.querySelector?.(".liste_contenu_ligne"));
+
+  const pickNameCell = (rowCells, nameColumn) => {
+    const directCandidates = getCellsForColumn(rowCells, nameColumn);
+    const directMatch = directCandidates.find((cell) => normalizeText(readStudentName(cell)));
+    if (directMatch) {
+      return directMatch;
+    }
+
+    const allCandidates = Object.entries(rowCells)
+      .filter(([key]) => key !== "rowKey")
+      .flatMap(([, cells]) => (Array.isArray(cells) ? cells : [cells]))
+      .filter(Boolean);
+
+    return allCandidates.find((cell) => normalizeText(readStudentName(cell))) || null;
+  };
+
+  const pickAppreciationCell = (rowCells, appreciationColumn, selectedNameCell) => {
+    const directCandidates = getCellsForColumn(rowCells, appreciationColumn)
+      .filter((cell) => cell && cell !== selectedNameCell);
+
+    const withLine = directCandidates.find((cell) => hasLineContainer(cell));
+    if (withLine) {
+      return withLine;
+    }
+
+    return directCandidates[0] || null;
   };
 
   const getScrollableContainer = () => {
@@ -220,7 +494,8 @@
   };
 
   const getVisibleRowsSnapshot = () => {
-    const { nameColumn, appreciationColumn } = getColumnConfig();
+    const { nameColumn, appreciationColumn, appreciationHeaderText } = getColumnConfig();
+    const targetLooksBlocked = isBlockedHeaderText(appreciationHeaderText || "");
     const rows = new Map();
 
     for (const cell of getGridCells()) {
@@ -239,30 +514,26 @@
         rows.set(rowKey, { rowKey });
       }
 
-      rows.get(rowKey)[column] = cell;
+      const rowCells = rows.get(rowKey);
+      if (!rowCells[column]) {
+        rowCells[column] = [];
+      }
+
+      if (Array.isArray(rowCells[column])) {
+        rowCells[column].push(cell);
+      } else {
+        rowCells[column] = [rowCells[column], cell];
+      }
     }
 
     const results = [];
     for (const [rowKey, rowCells] of rows.entries()) {
-      let nameCell = rowCells[nameColumn];
-      const appreciationCell = rowCells[appreciationColumn];
+      const nameCell = pickNameCell(rowCells, nameColumn);
+      const appreciationCell = targetLooksBlocked
+        ? null
+        : pickAppreciationCell(rowCells, appreciationColumn, nameCell);
       if (!nameCell || !appreciationCell) {
         continue;
-      }
-
-      // Fallback: if the default name column is not stable, pick the first readable cell.
-      if (!normalizeText(readStudentName(nameCell))) {
-        const orderedCells = Object.entries(rowCells)
-          .filter(([key]) => key !== "rowKey")
-          .map(([, cell]) => cell)
-          .filter(Boolean);
-
-        for (const candidateCell of orderedCells) {
-          if (normalizeText(readStudentName(candidateCell))) {
-            nameCell = candidateCell;
-            break;
-          }
-        }
       }
 
       const name = readStudentName(nameCell);
@@ -279,6 +550,17 @@
         appreciationCell,
       });
     }
+
+    debugLog("rows_snapshot", {
+      count: results.length,
+      columns: { nameColumn, appreciationColumn, targetLooksBlocked },
+      sample: results.slice(0, 3).map((row) => ({
+        rowKey: row.rowKey,
+        name: row.name,
+        nameCellId: row.nameCell?.id,
+        appreciationCellId: row.appreciationCell?.id,
+      })),
+    });
 
     results.sort((a, b) => Number(a.rowKey) - Number(b.rowKey));
     return results;
@@ -419,7 +701,7 @@
         rowKey: entry.rowKey || undefined,
         name: entry.name,
         ok: false,
-        reason: "row_not_found",
+        reason: "row_not_found_or_target_unavailable",
       },
     );
 

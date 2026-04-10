@@ -1,27 +1,21 @@
 import { useNavigate, useSearchParams } from "react-router";
-import { CheckCircle, Clock, Zap } from "lucide-react";
+import { CheckCircle, Clock } from "lucide-react";
 import { useEffect, useState } from "react";
 
 export function Success() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const creditsParam = searchParams.get("credits");
   const countParam = parseInt(searchParams.get("count") || "1");
   const failedParam = parseInt(searchParams.get("failed") || "0");
   const sourceParam = searchParams.get("source") || "pronote";
-  const [credits, setCredits] = useState(24);
   const [generatedCount, setGeneratedCount] = useState(1);
 
   useEffect(() => {
-    if (creditsParam) {
-      setCredits(parseInt(creditsParam));
-    }
-    
     // Get generation count
     const count = parseInt(localStorage.getItem("pronoteBoost_generatedCount") || "0") + countParam;
     setGeneratedCount(count);
     localStorage.setItem("pronoteBoost_generatedCount", count.toString());
-  }, [creditsParam, countParam]);
+  }, [countParam]);
 
   const estimatedTime = generatedCount * 3; // 3 minutes per appreciation
 
@@ -44,14 +38,14 @@ export function Success() {
         {/* Title */}
         <h2 className="text-lg text-gray-900 mb-2 text-center">
           {sourceParam === "pronote"
-            ? `${countParam} appreciation${countParam > 1 ? "s" : ""} ajoutee${countParam > 1 ? "s" : ""} dans Pronote`
-            : `${countParam} appreciation${countParam > 1 ? "s" : ""} preparee${countParam > 1 ? "s" : ""} en mode demo`}
+            ? `${countParam} appréciation${countParam > 1 ? "s" : ""} ajoutée${countParam > 1 ? "s" : ""} dans Pronote`
+            : `${countParam} appréciation${countParam > 1 ? "s" : ""} préparée${countParam > 1 ? "s" : ""} en mode démo`}
         </h2>
 
         {/* Message */}
         <p className="text-sm text-gray-600 mb-6 text-center">
           {failedParam > 0
-            ? `${failedParam} insertion${failedParam > 1 ? "s" : ""} a reprendre manuellement.`
+            ? `${failedParam} insertion${failedParam > 1 ? "s" : ""} à reprendre manuellement.`
             : "Vous venez de gagner du temps sur votre correction."}
         </p>
 
@@ -66,17 +60,11 @@ export function Success() {
 
         {/* Continue button */}
         <button
-          onClick={() => navigate("/")}
+          onClick={() => navigate("/generate")}
           className="w-full bg-[#396155] hover:bg-[#2a4a40] text-white py-3 px-4 rounded-lg transition-colors mb-4"
         >
           Générer la suivante
         </button>
-
-        {/* Credits remaining */}
-        <div className="flex items-center gap-2 text-sm text-gray-500">
-          <Zap className="w-4 h-4" />
-          <span>Crédits restants : {credits}</span>
-        </div>
       </div>
     </div>
   );
