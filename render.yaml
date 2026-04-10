@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: pronoteboost-api
+    runtime: node
+    buildCommand: npm install
+    startCommand: npm run start:server
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_MODEL
+        value: gpt-4.1-mini
+      - key: OPENAI_FALLBACK_MODEL
+        value: gpt-4o-mini
+      - key: OPENAI_PROMPT_APPEND
+        value: ""

@@ -4,6 +4,7 @@ const DAILY_API_LIMIT = 20;
 const DAILY_API_QUOTA_KEY = "pronoteBoost_dailyApiQuota";
 const MAX_API_ATTEMPTS = 3;
 const RETRY_BASE_DELAY_MS = 350;
+const NON_RETRYABLE_ERROR_PREFIX = "NON_RETRYABLE::";
 
 export interface GeminiGenerateInput {
   studentName: string;
@@ -65,6 +66,43 @@ const shouldRetryRequest = (status?: number): boolean => {
   return status >= 500;
 };
 
+const isQuotaOrRateLimitError = (message: string): boolean => {
+  const normalized = String(message || "").toLowerCase();
+  return (
+    normalized.includes("quota exceeded")
+    || normalized.includes("rate limit")
+    || normalized.includes("resource_exhausted")
+    || normalized.includes("too many requests")
+    || normalized.includes("billing")
+  );
+};
+
+const parseApiError = async (response: Response): Promise<string> => {
+  try {
+    const payload = (await response.json()) as { error?: string; reason?: string; code?: string };
+    if (typeof payload?.error === "string" && payload.error.trim()) {
+      return payload.error.trim();
+    }
+    if (typeof payload?.reason === "string" && payload.reason.trim()) {
+      return payload.reason.trim();
+    }
+    if (typeof payload?.code === "string" && payload.code.trim()) {
+      return payload.code.trim();
+    }
+  } catch {
+    // ignore JSON parse error and fallback below
+  }
+
+  return `Erreur API (${response.status})`;
+};
+
+const assertQuotaAvailable = (): void => {
+  const status = getDailyQuotaStatus();
+  if (status.remaining <= 0) {
+    throw new Error("Quota quotidien atteint (20 appels API). Revenez demain.");
+  }
+};
+
 const requestWithRetry = async (
   url: string,
   options: RequestInit,
@@ -76,13 +114,15 @@ const requestWithRetry = async (
       const response = await fetch(url, options);
 
       if (!response.ok) {
+        const apiError = await parseApiError(response);
         const retryAllowed = shouldRetryRequest(response.status);
-        if (!retryAllowed) {
-          throw new Error(`Erreur API Gemini (${response.status})`);
+        const nonRetryable = !retryAllowed || isQuotaOrRateLimitError(apiError);
+        if (nonRetryable) {
+          throw new Error(`${NON_RETRYABLE_ERROR_PREFIX}${apiError}`);
         }
 
         if (attempt === MAX_API_ATTEMPTS) {
-          throw new Error(`Erreur API Gemini (${response.status}) apres ${MAX_API_ATTEMPTS} tentatives`);
+          throw new Error(`${apiError} apres ${MAX_API_ATTEMPTS} tentatives`);
         }
 
         await wait(RETRY_BASE_DELAY_MS * attempt);
@@ -93,9 +133,8 @@ const requestWithRetry = async (
     } catch (error) {
       const caught = error instanceof Error ? error : new Error("Erreur reseau inconnue");
 
-      // Non-retryable 4xx errors are thrown as regular API errors above.
-      if (caught.message.includes("Erreur API Gemini (4")) {
-        throw caught;
+      if (caught.message.startsWith(NON_RETRYABLE_ERROR_PREFIX)) {
+        throw new Error(caught.message.slice(NON_RETRYABLE_ERROR_PREFIX.length));
       }
 
       lastError = caught;
@@ -108,11 +147,15 @@ const requestWithRetry = async (
   }
 
   const reason = lastError?.message || "Echec reseau";
-  throw new Error(`Erreur API Gemini apres ${MAX_API_ATTEMPTS} tentatives: ${reason}`);
+  throw new Error(`Serveur PronoteBoost indisponible ou erreur reseau (${reason})`);
 };
 
 const getDayKey = (): string => {
   const now = new Date();
+  // Daily quota resets at 08:00 local time. Before 08:00, keep previous logical day.
+  if (now.getHours() < 8) {
+    now.setDate(now.getDate() - 1);
+  }
   const year = now.getFullYear();
   const month = `${now.getMonth() + 1}`.padStart(2, "0");
   const day = `${now.getDate()}`.padStart(2, "0");
@@ -192,7 +235,7 @@ const consumeDailyApiCall = (): DailyQuotaStatus => {
 };
 
 const getApiBase = (): string | null => {
-  const apiBase = (import.meta as any)?.env?.VITE_PRONOTEBOOST_API_URL;
+  const apiBase = import.meta.env.VITE_PRONOTEBOOST_API_URL;
   if (!apiBase || typeof apiBase !== "string") {
     return null;
   }
@@ -209,10 +252,10 @@ export const generateAppreciationWithGemini = async (
 ): Promise<string> => {
   const apiBase = getApiBase();
   if (!apiBase) {
-    throw new Error("API Gemini non configuree");
+    throw new Error("API IA non configuree (VITE_PRONOTEBOOST_API_URL manquant).");
   }
 
-  consumeDailyApiCall();
+  assertQuotaAvailable();
 
   const response = await requestWithRetry(`${apiBase}/api/generate-appreciation`, {
     method: "POST",
@@ -223,13 +266,15 @@ export const generateAppreciationWithGemini = async (
   });
 
   if (!response.ok) {
-    throw new Error(`Erreur API Gemini (${response.status})`);
+    throw new Error(`Erreur API IA (${response.status})`);
   }
 
   const data = (await response.json()) as GeminiGenerateResponse;
   if (!data?.appreciation) {
-    throw new Error("Reponse Gemini invalide");
+    throw new Error("Reponse IA invalide");
   }
+
+  consumeDailyApiCall();
 
   return data.appreciation;
 };
@@ -240,14 +285,14 @@ export const generateAppreciationsWithGeminiBatch = async (
 ): Promise<GeminiBatchItemResponse[]> => {
   const apiBase = getApiBase();
   if (!apiBase) {
-    throw new Error("API Gemini non configuree");
+    throw new Error("API IA non configuree (VITE_PRONOTEBOOST_API_URL manquant).");
   }
 
   if (!students.length) {
     throw new Error("Aucun eleve selectionne pour la generation batch.");
   }
 
-  consumeDailyApiCall();
+  assertQuotaAvailable();
 
   const response = await requestWithRetry(`${apiBase}/api/generate-appreciations`, {
     method: "POST",
@@ -265,12 +310,14 @@ export const generateAppreciationsWithGeminiBatch = async (
   const data = (await response.json()) as GeminiBatchResponse;
 
   if (!data?.ok) {
-    throw new Error(data?.error || "Erreur batch Gemini");
+    throw new Error(data?.error || "Erreur batch IA");
   }
 
   if (!Array.isArray(data.appreciations) || data.appreciations.length === 0) {
-    throw new Error("Reponse batch Gemini invalide");
+    throw new Error("Reponse batch IA invalide");
   }
+
+  consumeDailyApiCall();
 
   return data.appreciations;
 };

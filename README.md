@@ -62,6 +62,24 @@ Charger ensuite le dossier généré `dist` comme extension non packée dans Chr
 
 ## MEP (Mise En Production)
 
+### Déploiement recommandé: Render + GitHub
+
+1. Pousser le repo sur GitHub (ex: `Cambrouillolage/pronoteboost`).
+2. Sur Render, choisir **New +** -> **Blueprint** et sélectionner le repo.
+3. Render lit `render.yaml` et crée le service `pronoteboost-api`.
+4. Renseigner les variables d'environnement Render:
+	- `OPENAI_API_KEY` (obligatoire)
+	- `OPENAI_MODEL` (optionnel, défaut `gpt-4.1-mini`)
+	- `OPENAI_FALLBACK_MODEL` (optionnel, défaut `gpt-4o-mini`)
+	- `OPENAI_PROMPT_APPEND` (optionnel)
+5. Après déploiement, récupérer l'URL publique Render, puis rebuild l'extension avec cette URL:
+
+```bash
+VITE_PRONOTEBOOST_API_URL=https://<service>.onrender.com npm run package:extension
+```
+
+6. Charger l'extension buildée (dossier `dist` ou zip généré) dans `chrome://extensions`.
+
 ### 1. Préparer l'environnement serveur
 
 Configurer `.env` sur la machine serveur:

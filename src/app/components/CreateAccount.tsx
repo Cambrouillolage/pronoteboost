@@ -78,7 +78,7 @@ export function CreateAccount() {
           <h1 className="text-base text-gray-900">Ton style d'annotation</h1>
         </div>
         <p className="text-xs text-gray-600">
-          Renseigne ta matière, tes mots préférés et les phrases que tu utilises souvent.
+          Renseigne ta matière, tes raccourcis d'appréciation et les phrases que tu utilises souvent.
         </p>
       </div>
 
@@ -100,10 +100,10 @@ export function CreateAccount() {
         <div className="rounded-lg border border-gray-200 bg-white p-3">
           <label className="mb-2 flex items-center gap-2 text-xs text-gray-700">
             <Tag className="w-4 h-4 text-[#396155]" />
-            Mots préférés
+            Raccourcis d'appréciation
           </label>
           <p className="text-[11px] text-gray-500 mb-2">
-            Exemple: rigoureux, impliqué, autonome.
+            Ces raccourcis apparaîtront comme quick actions lors de la génération. Ex : "Manque de travail", "Félicitations", "Progrès constants".
           </p>
           <div className="flex gap-2 mb-2">
             <input
@@ -116,7 +116,7 @@ export function CreateAccount() {
                   addWord();
                 }
               }}
-              placeholder="Ajouter un mot"
+              placeholder="Ajouter un raccourci"
               className="flex-1 p-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#396155] text-xs"
             />
             <button

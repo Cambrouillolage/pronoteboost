@@ -1,9 +1,13 @@
 import { useNavigate } from "react-router";
 import { Zap, TrendingUp } from "lucide-react";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
+import { getDailyQuotaStatus, type DailyQuotaStatus } from "../lib/gemini";
 
 export function Home() {
   const navigate = useNavigate();
+  const [quotaStatus, setQuotaStatus] = useState<DailyQuotaStatus>(() => getDailyQuotaStatus());
+  const quotaProgressPercent = Math.min(100, Math.max(0, (quotaStatus.used / quotaStatus.limit) * 100));
+  const isQuotaReached = quotaStatus.remaining <= 0;
 
   useEffect(() => {
     if (!localStorage.getItem("pronoteBoost_styleProfile")) {
@@ -13,6 +17,29 @@ export function Home() {
       );
     }
   }, [navigate]);
+
+  useEffect(() => {
+    const refreshQuota = () => {
+      setQuotaStatus(getDailyQuotaStatus());
+    };
+
+    const handleVisibilityChange = () => {
+      if (!document.hidden) {
+        refreshQuota();
+      }
+    };
+
+    refreshQuota();
+    window.addEventListener("focus", refreshQuota);
+    window.addEventListener("storage", refreshQuota);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener("focus", refreshQuota);
+      window.removeEventListener("storage", refreshQuota);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, []);
 
   const handleStart = () => {
     navigate("/style");
@@ -42,16 +69,20 @@ export function Home() {
           </p>
         </div>
 
-        {/* Daily limit counter */}
-        <div className="bg-gradient-to-br from-[#396155] to-[#2a4a40] rounded-xl p-4 mb-6 shadow-lg">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-full bg-white/20 flex items-center justify-center">
-              <Zap className="w-5 h-5 text-[#ff981d]" />
-            </div>
-            <div className="flex-1">
-              <div className="text-xs text-white/80 mb-1">Quota journalier</div>
-              <div className="text-2xl text-white">20 appels API / jour</div>
-            </div>
+        <div className="mb-6">
+          <div className="h-2.5 w-full overflow-hidden rounded-full bg-gray-200">
+            <div
+              className={`h-full transition-all duration-300 ${isQuotaReached ? "bg-[#ff981d]" : "bg-[#396155]"}`}
+              style={{ width: `${quotaProgressPercent}%` }}
+            />
+          </div>
+          <div className="mt-1 flex items-center justify-between text-[11px] text-gray-600">
+            <span>{quotaStatus.used} / {quotaStatus.limit} appels utilisés</span>
+            {isQuotaReached ? (
+              <span className="font-medium text-[#ff981d]">Limite atteinte, revenez demain après 8h.</span>
+            ) : (
+              <span>{quotaStatus.remaining} restant(s)</span>
+            )}
           </div>
         </div>
 

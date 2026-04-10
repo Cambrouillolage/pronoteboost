@@ -38,14 +38,14 @@ export function Success() {
         {/* Title */}
         <h2 className="text-lg text-gray-900 mb-2 text-center">
           {sourceParam === "pronote"
-            ? `${countParam} appreciation${countParam > 1 ? "s" : ""} ajoutee${countParam > 1 ? "s" : ""} dans Pronote`
-            : `${countParam} appreciation${countParam > 1 ? "s" : ""} preparee${countParam > 1 ? "s" : ""} en mode demo`}
+            ? `${countParam} appréciation${countParam > 1 ? "s" : ""} ajoutée${countParam > 1 ? "s" : ""} dans Pronote`
+            : `${countParam} appréciation${countParam > 1 ? "s" : ""} préparée${countParam > 1 ? "s" : ""} en mode démo`}
         </h2>
 
         {/* Message */}
         <p className="text-sm text-gray-600 mb-6 text-center">
           {failedParam > 0
-            ? `${failedParam} insertion${failedParam > 1 ? "s" : ""} a reprendre manuellement.`
+            ? `${failedParam} insertion${failedParam > 1 ? "s" : ""} à reprendre manuellement.`
             : "Vous venez de gagner du temps sur votre correction."}
         </p>
 
